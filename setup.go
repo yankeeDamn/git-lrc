@@ -174,6 +174,7 @@ type ensureCloudUserRequest struct {
 	Email     string `json:"email"`
 	FirstName string `json:"first_name"`
 	LastName  string `json:"last_name"`
+	Source    string `json:"source,omitempty"`
 }
 
 // ensureCloudUserResponse models the response from ensure-cloud-user.
@@ -466,6 +467,7 @@ func provisionLiveReviewUser(cbData *hexmosCallbackData, slog *setupLog) (*setup
 		Email:     cbData.Result.Data.Email,
 		FirstName: cbData.Result.Data.FirstName,
 		LastName:  cbData.Result.Data.LastName,
+		Source:    "git-lrc",
 	}
 
 	bodyJSON, err := json.Marshal(reqBody)
