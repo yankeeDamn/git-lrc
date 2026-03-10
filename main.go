@@ -1175,6 +1175,7 @@ func runReviewWithOptions(opts reviewOptions) error {
 							precommit:          opts.precommit,
 							verbose:            verbose,
 							initialMsg:         initialMsg,
+							commitMsgPath:      commitMsgPath,
 							diffContent:        diffContent,
 							reviewID:           reviewID,
 							attestationWritten: &attestationWritten,
@@ -1225,6 +1226,7 @@ func runReviewWithOptions(opts reviewOptions) error {
 				precommit:          opts.precommit,
 				verbose:            verbose,
 				initialMsg:         initialMsg,
+				commitMsgPath:      commitMsgPath,
 				diffContent:        diffContent,
 				reviewID:           reviewID,
 				attestationWritten: &attestationWritten,
@@ -1359,6 +1361,7 @@ func runReviewWithOptions(opts reviewOptions) error {
 					precommit:          opts.precommit,
 					verbose:            verbose,
 					initialMsg:         initialMsg,
+					commitMsgPath:      commitMsgPath,
 					diffContent:        diffContent,
 					reviewID:           reviewID,
 					attestationWritten: &attestationWritten,
@@ -1409,6 +1412,7 @@ func runReviewWithOptions(opts reviewOptions) error {
 					precommit:          false,
 					verbose:            verbose,
 					initialMsg:         initialMsg,
+					commitMsgPath:      commitMsgPath,
 					diffContent:        diffContent,
 					reviewID:           reviewID,
 					attestationWritten: &attestationWritten,
@@ -1535,6 +1539,10 @@ func runCommitAndMaybePush(message string, push bool, verbose bool) error {
 	if msg != "" {
 		commitArgs = append(commitArgs, "-m", msg)
 	}
+
+	// Ensure git starts printing on a fresh terminal line.
+	fmt.Println()
+	os.Stdout.Sync()
 
 	commitCmd := exec.Command("git", commitArgs...)
 	if msg == "" {

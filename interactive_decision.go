@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/urfave/cli/v2"
@@ -11,6 +12,7 @@ type decisionExecutionContext struct {
 	precommit          bool
 	verbose            bool
 	initialMsg         string
+	commitMsgPath      string
 	diffContent        []byte
 	reviewID           string
 	attestationWritten *bool
@@ -35,11 +37,32 @@ func executeDecision(code int, message string, push bool, ctx decisionExecutionC
 		fmt.Println("\n❌ Commit aborted by user")
 		return cli.Exit("", decisionAbort)
 	case decisionCommit:
+		if ctx.precommit {
+			fmt.Println("\n✅ Proceeding with commit")
+		}
 		finalMsg := strings.TrimSpace(message)
 		if finalMsg == "" {
 			finalMsg = strings.TrimSpace(ctx.initialMsg)
 		}
 		if ctx.precommit {
+			if ctx.commitMsgPath != "" {
+				if strings.TrimSpace(finalMsg) != "" {
+					if err := persistCommitMessage(ctx.commitMsgPath, finalMsg); err != nil {
+						fmt.Fprintf(os.Stderr, "Warning: failed to store commit message: %v\n", err)
+					}
+				} else {
+					_ = clearCommitMessageFile(ctx.commitMsgPath)
+				}
+			}
+
+			if push {
+				if err := persistPushRequest(ctx.commitMsgPath); err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: failed to store push request: %v\n", err)
+				}
+			} else {
+				_ = clearPushRequest(ctx.commitMsgPath)
+			}
+
 			return cli.Exit("", decisionCommit)
 		}
 		if err := runCommitAndMaybePush(finalMsg, push, ctx.verbose); err != nil {
@@ -52,6 +75,8 @@ func executeDecision(code int, message string, push bool, ctx decisionExecutionC
 			return err
 		}
 		if ctx.precommit {
+			_ = clearCommitMessageFile(ctx.commitMsgPath)
+			_ = clearPushRequest(ctx.commitMsgPath)
 			return cli.Exit("", decisionSkip)
 		}
 		if err := runCommitAndMaybePush(strings.TrimSpace(message), push, ctx.verbose); err != nil {
@@ -64,6 +89,8 @@ func executeDecision(code int, message string, push bool, ctx decisionExecutionC
 			return fmt.Errorf("vouch failed: %w", err)
 		}
 		if ctx.precommit {
+			_ = clearCommitMessageFile(ctx.commitMsgPath)
+			_ = clearPushRequest(ctx.commitMsgPath)
 			return cli.Exit("", decisionSkip)
 		}
 		if err := runCommitAndMaybePush(strings.TrimSpace(message), push, ctx.verbose); err != nil {
