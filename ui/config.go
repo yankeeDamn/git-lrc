@@ -3,9 +3,9 @@ package ui
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
+	"github.com/HexmosTech/git-lrc/configpath"
 	"github.com/knadh/koanf/parsers/toml"
 	"github.com/knadh/koanf/providers/file"
 	"github.com/knadh/koanf/v2"
@@ -13,12 +13,11 @@ import (
 
 // LoadRuntimeConfig reads ~/.lrc.toml and returns UI runtime config values.
 func LoadRuntimeConfig(defaultAPIURL string) (*RuntimeConfig, error) {
-	homeDir, err := os.UserHomeDir()
+	configPath, err := configpath.ResolveConfigPath()
 	if err != nil {
-		return nil, fmt.Errorf("failed to determine home directory: %w", err)
+		return nil, err
 	}
 
-	configPath := filepath.Join(homeDir, ".lrc.toml")
 	cfg := &RuntimeConfig{
 		APIURL:        defaultAPIURL,
 		ConfigPath:    configPath,

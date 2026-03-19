@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/HexmosTech/git-lrc/attestation"
+	"github.com/HexmosTech/git-lrc/configpath"
 	"github.com/HexmosTech/git-lrc/interactive/input"
 	"github.com/HexmosTech/git-lrc/internal/ctrlkey"
 	"github.com/HexmosTech/git-lrc/internal/decisionflow"
@@ -1335,10 +1336,9 @@ func loadConfigValues(apiKeyOverride, apiURLOverride string, verbose bool) (*Con
 	config := &Config{}
 
 	// Try to load from config file first
-	homeDir, err := os.UserHomeDir()
+	configPath, err := configpath.ResolveConfigPath()
 	var k *koanf.Koanf
 	if err == nil {
-		configPath := filepath.Join(homeDir, ".lrc.toml")
 		config.ConfigPath = configPath
 		if _, err := os.Stat(configPath); err == nil {
 			// Config file exists, try to load it

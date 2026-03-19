@@ -2,11 +2,11 @@ package hooks
 
 import (
 	"encoding/json"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 
+	"github.com/HexmosTech/git-lrc/configpath"
 	"github.com/HexmosTech/git-lrc/storage"
 )
 
@@ -18,7 +18,7 @@ type Meta struct {
 }
 
 func DefaultGlobalHooksPath(defaultDir string) (string, error) {
-	home, err := os.UserHomeDir()
+	home, err := configpath.ResolveHomeDir()
 	if err != nil {
 		return "", err
 	}

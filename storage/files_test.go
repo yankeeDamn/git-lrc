@@ -45,3 +45,22 @@ func TestChmodExecutableMode(t *testing.T) {
 		t.Fatalf("unexpected mode: got %o want %o", got, os.FileMode(0755))
 	}
 }
+
+func TestWriteFileAtomicallyCreatesMissingParentDirectory(t *testing.T) {
+	tmpDir := t.TempDir()
+	targetDir := filepath.Join(tmpDir, "nested", "config")
+	targetPath := filepath.Join(targetDir, ".lrc.toml")
+	content := []byte("api_key = \"test\"\n")
+
+	if err := WriteFileAtomically(targetPath, content, 0600); err != nil {
+		t.Fatalf("write atomically with missing parent: %v", err)
+	}
+
+	got, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatalf("read target file: %v", err)
+	}
+	if string(got) != string(content) {
+		t.Fatalf("unexpected file content: got %q want %q", string(got), string(content))
+	}
+}

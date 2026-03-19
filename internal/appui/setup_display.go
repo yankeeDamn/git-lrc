@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/HexmosTech/git-lrc/configpath"
 	"github.com/HexmosTech/git-lrc/storage"
 )
 
@@ -85,7 +86,7 @@ type setupLog struct {
 
 func newSetupLog() *setupLog {
 	logFile := ""
-	if homeDir, err := os.UserHomeDir(); err == nil {
+	if homeDir, err := configpath.ResolveHomeDir(); err == nil {
 		logFile = filepath.Join(homeDir, ".lrc-setup.log")
 	} else {
 		logFile = filepath.Join(os.TempDir(), "lrc-setup.log")
@@ -94,6 +95,9 @@ func newSetupLog() *setupLog {
 	sl.write("=== lrc setup started at %s ===", time.Now().Format(time.RFC3339))
 	sl.write("lrc version: %s  build: %s  commit: %s", buildVersion, buildTime, buildCommit)
 	sl.write("os: %s/%s", runtime.GOOS, runtime.GOARCH)
+	if configPath, err := configpath.ResolveConfigPath(); err == nil {
+		sl.write("resolved config path: %s", configPath)
+	}
 	return sl
 }
 

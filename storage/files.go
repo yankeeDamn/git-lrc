@@ -35,6 +35,9 @@ func WriteFileAtomically(path string, data []byte, mode os.FileMode) error {
 	if targetDir == "" {
 		targetDir = "."
 	}
+	if err := os.MkdirAll(targetDir, 0700); err != nil {
+		return fmt.Errorf("failed to create target directory %s: %w", targetDir, err)
+	}
 
 	tmpFile, err := os.CreateTemp(targetDir, ".lrc-config-*.tmp")
 	if err != nil {

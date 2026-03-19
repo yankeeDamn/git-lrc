@@ -12,6 +12,7 @@ import (
 	"time"
 
 	cfgutil "github.com/HexmosTech/git-lrc/config"
+	"github.com/HexmosTech/git-lrc/configpath"
 	"github.com/HexmosTech/git-lrc/internal/reviewapi"
 	"github.com/HexmosTech/git-lrc/internal/reviewmodel"
 	"github.com/HexmosTech/git-lrc/network"
@@ -293,11 +294,7 @@ func resolveConfigPath(configPath string) (string, error) {
 	if strings.TrimSpace(configPath) != "" {
 		return strings.TrimSpace(configPath), nil
 	}
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("failed to determine config path: %w", err)
-	}
-	return filepath.Join(homeDir, ".lrc.toml"), nil
+	return configpath.ResolveConfigPath()
 }
 
 func persistConfigUpdates(configPath, apiURL string, updates map[string]string) error {
@@ -333,7 +330,7 @@ func persistAuthRecoveryDiagnostic(diag *authRecoveryDiagnostic, elapsed time.Du
 	}
 	diag.DurationMS = elapsed.Milliseconds()
 
-	homeDir, err := os.UserHomeDir()
+	homeDir, err := configpath.ResolveHomeDir()
 	if err != nil {
 		return fmt.Errorf("failed to determine home directory for diagnostics: %w", err)
 	}

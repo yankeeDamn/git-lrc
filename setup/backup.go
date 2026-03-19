@@ -3,10 +3,10 @@ package setup
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/HexmosTech/git-lrc/configpath"
 	"github.com/HexmosTech/git-lrc/storage"
 )
 
@@ -19,13 +19,12 @@ func BackupExistingConfig(logf func(format string, args ...interface{})) (string
 		}
 	}
 
-	homeDir, err := os.UserHomeDir()
+	configPath, err := configpath.ResolveConfigPath()
 	if err != nil {
-		log("cannot determine home directory: %v", err)
-		return "", fmt.Errorf("cannot determine home directory: %w", err)
+		log("cannot determine config path: %v", err)
+		return "", fmt.Errorf("cannot determine config path: %w", err)
 	}
 
-	configPath := filepath.Join(homeDir, ".lrc.toml")
 	data, err := storage.ReadConfigFile(configPath)
 	if err != nil {
 		if os.IsNotExist(err) {
