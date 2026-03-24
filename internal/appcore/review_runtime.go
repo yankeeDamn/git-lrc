@@ -26,6 +26,7 @@ import (
 	"github.com/HexmosTech/git-lrc/attestation"
 	"github.com/HexmosTech/git-lrc/configpath"
 	"github.com/HexmosTech/git-lrc/interactive/input"
+	"github.com/HexmosTech/git-lrc/internal/appcore/decisionruntime"
 	"github.com/HexmosTech/git-lrc/internal/ctrlkey"
 	"github.com/HexmosTech/git-lrc/internal/decisionflow"
 	"github.com/HexmosTech/git-lrc/internal/reviewapi"
@@ -363,9 +364,9 @@ func runReviewWithOptions(opts reviewopts.Options) error {
 	}
 	var progressiveDecisionChan chan progressiveDecision
 	var progressiveDecide func(code int, message string, push bool)
+	var progressiveSubmit func(source decisionruntime.Source, code int, message string, push bool) bool
 	var progressiveDecideOnce sync.Once
-	currentPhase := decisionflow.PhaseReviewRunning
-	var currentPhaseMu sync.RWMutex
+	progressiveRuntime := decisionruntime.New(decisionflow.PhaseReviewRunning)
 
 	fmt.Printf("Review submitted, ID: %s\n", reviewID)
 	if submitResp.UserEmail != "" {
@@ -450,22 +451,52 @@ func runReviewWithOptions(opts reviewopts.Options) error {
 				progressiveDecisionChan <- progressiveDecision{code: code, message: message, push: push}
 			})
 		}
+		progressiveSubmit = func(source decisionruntime.Source, code int, message string, push bool) bool {
+			outcome := progressiveRuntime.TryDecide(decisionruntime.Decision{
+				Source:  source,
+				Code:    code,
+				Message: message,
+				Push:    push,
+			})
+			if outcome.Err != nil || !outcome.Accepted {
+				return false
+			}
+			chosen, ok := progressiveRuntime.Chosen()
+			if !ok {
+				return false
+			}
+			progressiveDecide(chosen.Code, chosen.Message, chosen.Push)
+			return true
+		}
 		handleProgressiveDecision := func(w http.ResponseWriter, code int, message string, push bool) {
-			currentPhaseMu.RLock()
-			phase := currentPhase
-			currentPhaseMu.RUnlock()
+			outcome := progressiveRuntime.TryDecide(decisionruntime.Decision{Source: decisionruntime.SourceWeb, Code: code, Message: message, Push: push})
+			if outcome.Err != nil {
+				if errors.Is(outcome.Err, decisionruntime.ErrAlreadyResolved) {
+					http.Error(w, outcome.Err.Error(), http.StatusConflict)
+					return
+				}
 
-			if err := decisionflow.ValidateRequest(code, message, phase); err != nil {
-				reqErr, ok := err.(*decisionflow.RequestError)
+				reqErr, ok := outcome.Err.(*decisionflow.RequestError)
 				if !ok {
-					http.Error(w, err.Error(), http.StatusBadRequest)
+					http.Error(w, outcome.Err.Error(), http.StatusBadRequest)
 					return
 				}
 				http.Error(w, reqErr.Error(), reqErr.StatusCode())
 				return
 			}
 
-			progressiveDecide(code, message, push)
+			if !outcome.Accepted {
+				http.Error(w, "decision rejected", http.StatusConflict)
+				return
+			}
+
+			chosen, ok := progressiveRuntime.Chosen()
+			if !ok {
+				http.Error(w, "decision resolution failed", http.StatusConflict)
+				return
+			}
+
+			progressiveDecide(chosen.Code, chosen.Message, chosen.Push)
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte("ok"))
 		}
@@ -568,70 +599,20 @@ func runReviewWithOptions(opts reviewopts.Options) error {
 
 					w.Header().Set("Content-Type", "application/json")
 					if err := json.NewEncoder(w).Encode(buildFakeEventsResponse(state.Snapshot())); err != nil {
-						http.Error(w, "Failed to encode fake events", http.StatusInternalServerError)
+						if verbose {
+							log.Printf("failed to write fake events response: %v", err)
+						}
 					}
 					return
 				}
 
-				// Forward request to backend API with authentication
-				backendURL := network.ReviewProxyRequestURL(config.APIURL, r.URL.Path, r.URL.RawQuery)
-
-				if verbose {
-					log.Printf("Proxying %s request to: %s", r.Method, backendURL)
-					log.Printf("Using API key: %s...", config.APIKey[:min(10, len(config.APIKey))])
-				}
-
-				// Forward the actual HTTP method (GET, POST, PUT, etc)
-				var reqBody []byte
-				if r.Body != nil {
-					const maxProxyBodyBytes = 8 << 20 // 8 MiB
-					readBody, readErr := io.ReadAll(io.LimitReader(r.Body, maxProxyBodyBytes+1))
-					if readErr != nil {
-						http.Error(w, "Failed to read request body", http.StatusBadRequest)
-						return
-					}
-					if len(readBody) > maxProxyBodyBytes {
-						http.Error(w, "Request body too large", http.StatusRequestEntityTooLarge)
-						return
-					}
-					reqBody = readBody
-				}
-
-				client := network.NewReviewProxyClient(10 * time.Second)
-				resp, err := network.ReviewProxyRequest(client, r.Method, config.APIURL, r.URL.Path, r.URL.RawQuery, reqBody, config.APIKey)
-				if err != nil {
-					if verbose {
-						log.Printf("Proxy error: %v", err)
-					}
-					http.Error(w, "Failed to fetch events", http.StatusBadGateway)
-					return
-				}
-				if verbose {
-					log.Printf("Backend response status: %d", resp.StatusCode)
-				}
-
-				// Copy response headers
-				for key, values := range resp.Header {
-					for _, value := range values {
-						w.Header().Add(key, value)
-					}
-				}
-				w.WriteHeader(resp.StatusCode)
-
-				// Copy response body
-				if verbose && resp.StatusCode != 200 {
-					log.Printf("Error response body: %s", string(resp.Body))
-				}
-				if _, err := io.Copy(w, bytes.NewReader(resp.Body)); err != nil && verbose {
-					log.Printf("failed to write proxy response body: %v", err)
-				}
+				handleReviewEventsProxy(w, r, *config, reviewID, verbose)
 			})
-			server := &http.Server{
-				Handler: mux,
-			}
+
+			server := &http.Server{Handler: mux}
 			if err := server.Serve(serveListener); err != nil && err != http.ErrServerClosed {
 				if verbose {
-					log.Printf("Background server error: %v", err)
+					log.Printf("progressive server failed: %v", err)
 				}
 			}
 		}()
@@ -694,7 +675,23 @@ func runReviewWithOptions(opts reviewopts.Options) error {
 		signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 		defer signal.Stop(sigChan)
 
+		interactiveRuntime := decisionruntime.New(decisionflow.PhaseReviewRunning)
 		decisionChan := make(chan int, 1)
+		var decisionOnce sync.Once
+		submitInteractiveDecision := func(source decisionruntime.Source, code int) bool {
+			outcome := interactiveRuntime.TryDecide(decisionruntime.Decision{Source: source, Code: code})
+			if outcome.Err != nil || !outcome.Accepted {
+				return false
+			}
+			chosen, ok := interactiveRuntime.Chosen()
+			if !ok {
+				return false
+			}
+			decisionOnce.Do(func() {
+				decisionChan <- chosen.Code
+			})
+			return true
+		}
 		stopCtrlS := make(chan struct{})
 		var stopCtrlSOnce sync.Once
 		stopCtrlSFn := func() { stopCtrlSOnce.Do(func() { close(stopCtrlS) }) }
@@ -702,14 +699,14 @@ func runReviewWithOptions(opts reviewopts.Options) error {
 		// Ctrl-C -> abort commit
 		go func() {
 			<-sigChan
-			decisionChan <- decisionflow.DecisionAbort
+			submitInteractiveDecision(decisionruntime.SourceSignal, decisionflow.DecisionAbort)
 		}()
 
 		// Ctrl-S -> skip review but still commit; Ctrl-C captured in raw mode fallback
 		go func() {
 			code, err := ctrlkey.HandleWithCancel(stopCtrlS, false)
 			if err == nil && code != 0 {
-				decisionChan <- code
+				submitInteractiveDecision(decisionruntime.SourceTerminal, code)
 			}
 		}()
 
@@ -748,10 +745,9 @@ func runReviewWithOptions(opts reviewopts.Options) error {
 			if pollUsedRecovery {
 				config = &pollUpdatedConfig
 			}
+			interactiveRuntime.SetPhase(decisionflow.PhaseReviewComplete)
 			if progressiveLoadingActive {
-				currentPhaseMu.Lock()
-				currentPhase = decisionflow.PhaseReviewComplete
-				currentPhaseMu.Unlock()
+				progressiveRuntime.SetPhase(decisionflow.PhaseReviewComplete)
 			}
 			// Prefer a user decision if it arrives within a short grace window after poll finishes
 			select {
@@ -939,7 +935,9 @@ func runReviewWithOptions(opts reviewopts.Options) error {
 
 				go func() {
 					<-sigChan
-					progressiveDecide(decisionflow.DecisionAbort, "", false) // abort
+					if progressiveSubmit != nil {
+						progressiveSubmit(decisionruntime.SourceSignal, decisionflow.DecisionAbort, "", false)
+					}
 				}()
 
 				stopKeys := make(chan struct{})
@@ -954,14 +952,18 @@ func runReviewWithOptions(opts reviewopts.Options) error {
 						if err != nil || code == 0 {
 							fallbackCode, fallbackErr := handleEnterFallbackWithCancel(stopKeys)
 							if fallbackErr == nil && fallbackCode == decisionflow.DecisionCommit {
-								progressiveDecide(decisionflow.DecisionCommit, "", false)
+								if progressiveSubmit != nil {
+									progressiveSubmit(decisionruntime.SourceTerminal, decisionflow.DecisionCommit, "", false)
+								}
 							}
 							return
 						}
 						if code == decisionflow.DecisionSkip || code == decisionflow.DecisionVouch {
 							continue
 						}
-						progressiveDecide(code, "", false)
+						if progressiveSubmit != nil {
+							progressiveSubmit(decisionruntime.SourceTerminal, code, "", false)
+						}
 						return
 					}
 				}()
@@ -1959,6 +1961,57 @@ func readCommitMessageFromRequest(r *http.Request) string {
 	return msg
 }
 
+func handleReviewEventsProxy(w http.ResponseWriter, r *http.Request, config Config, reviewID string, verbose bool) {
+	backendURL := network.ReviewProxyRequestURL(config.APIURL, r.URL.Path, r.URL.RawQuery)
+
+	if verbose {
+		log.Printf("Proxying %s request to: %s", r.Method, backendURL)
+		log.Printf("Using API key: %s...", config.APIKey[:min(10, len(config.APIKey))])
+	}
+
+	var reqBody []byte
+	if r.Body != nil {
+		const maxProxyBodyBytes = 8 << 20 // 8 MiB
+		readBody, readErr := io.ReadAll(io.LimitReader(r.Body, maxProxyBodyBytes+1))
+		if readErr != nil {
+			http.Error(w, "Failed to read request body", http.StatusBadRequest)
+			return
+		}
+		if len(readBody) > maxProxyBodyBytes {
+			http.Error(w, "Request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+		reqBody = readBody
+	}
+
+	client := network.NewReviewProxyClient(10 * time.Second)
+	resp, err := network.ReviewProxyRequest(client, r.Method, config.APIURL, r.URL.Path, r.URL.RawQuery, reqBody, config.APIKey)
+	if err != nil {
+		if verbose {
+			log.Printf("Proxy error: %v", err)
+		}
+		http.Error(w, "Failed to fetch events", http.StatusBadGateway)
+		return
+	}
+	if verbose {
+		log.Printf("Backend response status: %d", resp.StatusCode)
+	}
+
+	for key, values := range resp.Header {
+		for _, value := range values {
+			w.Header().Add(key, value)
+		}
+	}
+	w.WriteHeader(resp.StatusCode)
+
+	if verbose && resp.StatusCode != http.StatusOK {
+		log.Printf("Error response body: %s", string(resp.Body))
+	}
+	if _, err := io.Copy(w, bytes.NewReader(resp.Body)); err != nil && verbose {
+		log.Printf("failed to write proxy response body: %v", err)
+	}
+}
+
 // serveHTMLInteractive serves HTML and waits for user decision
 // Returns decision details (code: 0 commit, 1 abort, 2 skip-from-terminal, 3 skip-from-HTML)
 // skipBrowserOpen: set to true if browser is already open (e.g., from progressive loading)
@@ -2000,7 +2053,7 @@ func serveHTMLInteractive(htmlPath string, port int, ln net.Listener, initialMsg
 		push    bool
 	}
 
-	const currentPhase = decisionflow.PhaseReviewComplete
+	runtimeDecision := decisionruntime.New(decisionflow.PhaseReviewComplete)
 
 	decisionChan := make(chan precommitDecision, 1)
 	var decideOnce sync.Once
@@ -2009,17 +2062,49 @@ func serveHTMLInteractive(htmlPath string, port int, ln net.Listener, initialMsg
 			decisionChan <- precommitDecision{code: code, message: message, push: push}
 		})
 	}
+	submit := func(source decisionruntime.Source, code int, message string, push bool) bool {
+		outcome := runtimeDecision.TryDecide(decisionruntime.Decision{
+			Source:  source,
+			Code:    code,
+			Message: message,
+			Push:    push,
+		})
+		if outcome.Err != nil || !outcome.Accepted {
+			return false
+		}
+		chosen, ok := runtimeDecision.Chosen()
+		if !ok {
+			return false
+		}
+		decide(chosen.Code, chosen.Message, chosen.Push)
+		return true
+	}
 	handleDecision := func(w http.ResponseWriter, code int, message string, push bool) {
-		if err := decisionflow.ValidateRequest(code, message, currentPhase); err != nil {
-			reqErr, ok := err.(*decisionflow.RequestError)
+		outcome := runtimeDecision.TryDecide(decisionruntime.Decision{
+			Source:  decisionruntime.SourceWeb,
+			Code:    code,
+			Message: message,
+			Push:    push,
+		})
+		if outcome.Err != nil {
+			if errors.Is(outcome.Err, decisionruntime.ErrAlreadyResolved) {
+				http.Error(w, outcome.Err.Error(), http.StatusConflict)
+				return
+			}
+			reqErr, ok := outcome.Err.(*decisionflow.RequestError)
 			if !ok {
-				http.Error(w, err.Error(), http.StatusBadRequest)
+				http.Error(w, outcome.Err.Error(), http.StatusBadRequest)
 				return
 			}
 			http.Error(w, reqErr.Error(), reqErr.StatusCode())
 			return
 		}
-		decide(code, message, push)
+		chosen, ok := runtimeDecision.Chosen()
+		if !ok {
+			http.Error(w, "decision resolution failed", http.StatusConflict)
+			return
+		}
+		decide(chosen.Code, chosen.Message, chosen.Push)
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	}
@@ -2096,7 +2181,7 @@ func serveHTMLInteractive(htmlPath string, port int, ln net.Listener, initialMsg
 	defer signal.Stop(sigChan)
 	go func() {
 		<-sigChan
-		decide(1, "", false)
+		submit(decisionruntime.SourceSignal, decisionflow.DecisionAbort, "", false)
 	}()
 
 	stopKeys := make(chan struct{})
@@ -2111,14 +2196,14 @@ func serveHTMLInteractive(htmlPath string, port int, ln net.Listener, initialMsg
 			if err != nil || code == 0 {
 				fallbackCode, fallbackErr := handleEnterFallbackWithCancel(stopKeys)
 				if fallbackErr == nil && fallbackCode == decisionflow.DecisionCommit {
-					decide(decisionflow.DecisionCommit, "", false)
+					submit(decisionruntime.SourceTerminal, decisionflow.DecisionCommit, "", false)
 				}
 				return
 			}
 			if code == decisionflow.DecisionSkip || code == decisionflow.DecisionVouch {
 				continue
 			}
-			decide(code, "", false)
+			submit(decisionruntime.SourceTerminal, code, "", false)
 			return
 		}
 	}()
